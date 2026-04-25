@@ -155,12 +155,44 @@ class ValidationUtils:
         return {"valid": True}
     
     @staticmethod
+    def validate_workspace_path(path: str, workspace_dir: str) -> Dict[str, Union[bool, str]]:
+        """Validate that a path resolves within the workspace directory.
+        
+        Prevents path traversal attacks (CWE-22) by ensuring the resolved
+        path is contained within WORKSPACE_DIR.
+        
+        Args:
+            path: The path to validate
+            workspace_dir: The workspace directory to validate against
+            
+        Returns:
+            Dictionary with 'valid' boolean and optional 'error' message
+        """
+        if not path or not isinstance(path, str):
+            return {"valid": False, "error": "Path cannot be empty"}
+        
+        real_path = os.path.realpath(path)
+        real_workspace = os.path.realpath(workspace_dir)
+        
+        # Ensure the path is within the workspace (use os.sep to prevent
+        # prefix-matching against sibling directories, e.g.
+        # /workspace_evil matching /workspace)
+        if not (real_path == real_workspace or real_path.startswith(real_workspace + os.sep)):
+            return {
+                "valid": False,
+                "error": f"Path must be within the workspace directory ({real_workspace}). "
+                         f"Resolved path: {real_path}"
+            }
+        
+        return {"valid": True}
+    
+    @staticmethod
     def validate_class_name(class_name: str) -> Dict[str, Union[bool, str]]:
         """Validate Java class name format"""
         if not class_name or not isinstance(class_name, str):
             return {"valid": False, "error": "Class name cannot be empty"}
             
-        if not class_name.replace('.', '').replace('_', '').replace('$', '').replace('/', '').isalnum():
+        if not class_name.replace('.', '').replace('_', '').replace('$', '').isalnum():
             return {"valid": False, "error": "Invalid class name format"}
             
         return {"valid": True}
@@ -316,6 +348,11 @@ async def decode_apk(
         apk_name = os.path.basename(apk_path).rsplit('.', 1)[0]
         output_dir = os.path.join(WORKSPACE_DIR, apk_name)
     
+    # Validate output_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(output_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     # Build command
     command = ["apktool", "d", apk_path, "-o", output_dir]
     if force:
@@ -370,6 +407,11 @@ async def build_apk(
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     if not os.path.isdir(project_dir):
         return {"success": False, "error": f"Project path is not a directory: {project_dir}"}
     
@@ -390,6 +432,10 @@ async def build_apk(
     if force_all:
         command.append("-f")
     if output_apk:
+        # Validate output_apk is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+        workspace_validation = ValidationUtils.validate_workspace_path(output_apk, WORKSPACE_DIR)
+        if not workspace_validation["valid"]:
+            return {"success": False, "error": workspace_validation["error"]}
         command.extend(["-o", output_apk])
     
     result = run_command(command, timeout=timeout)
@@ -422,6 +468,11 @@ async def get_manifest(project_dir: str) -> Dict:
     path_validation = ValidationUtils.validate_path(project_dir, must_exist=True)
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
+    
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
     
     manifest_path = os.path.join(project_dir, "AndroidManifest.xml")
     if not os.path.exists(manifest_path):
@@ -469,6 +520,11 @@ async def get_apktool_yml(project_dir: str) -> Dict:
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     yml_path = os.path.join(project_dir, "apktool.yml")
     if not os.path.exists(yml_path):
         return {
@@ -514,6 +570,11 @@ async def list_smali_directories(project_dir: str) -> Dict:
     path_validation = ValidationUtils.validate_path(project_dir, must_exist=True)
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
+    
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
     
     try:
         smali_dirs = []
@@ -574,7 +635,18 @@ async def list_smali_files(
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     smali_path = os.path.join(project_dir, smali_dir)
+    
+    # Validate smali_dir doesn't escape project_dir via traversal (CWE-22)
+    real_smali_path = os.path.realpath(smali_path)
+    real_project_dir = os.path.realpath(project_dir)
+    if not real_smali_path.startswith(real_project_dir + os.sep):
+        return {"success": False, "error": "smali_dir must not contain path traversal components"}
     if not os.path.exists(smali_path):
         # Get available smali directories
         try:
@@ -667,6 +739,11 @@ async def get_smali_file(project_dir: str, class_name: str) -> Dict:
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     class_validation = ValidationUtils.validate_class_name(class_name)
     if not class_validation["valid"]:
         return {"success": False, "error": class_validation["error"]}
@@ -733,6 +810,11 @@ async def modify_smali_file(
     path_validation = ValidationUtils.validate_path(project_dir, must_exist=True)
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
+    
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
     
     class_validation = ValidationUtils.validate_class_name(class_name)
     if not class_validation["valid"]:
@@ -816,6 +898,11 @@ async def list_resources(
     path_validation = ValidationUtils.validate_path(project_dir, must_exist=True)
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
+    
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
     
     res_path = os.path.join(project_dir, "res")
     if not os.path.exists(res_path):
@@ -947,10 +1034,22 @@ async def get_resource_file(project_dir: str, resource_type: str, resource_name:
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     if not resource_type or not resource_name:
         return {"success": False, "error": "Resource type and name are required"}
     
     resource_path = os.path.join(project_dir, "res", resource_type, resource_name)
+    
+    # Validate resource_path stays within project_dir to prevent traversal via
+    # resource_type/resource_name containing ".." (CWE-22)
+    real_resource_path = os.path.realpath(resource_path)
+    real_project_dir = os.path.realpath(project_dir)
+    if not real_resource_path.startswith(real_project_dir + os.sep):
+        return {"success": False, "error": "Path traversal detected in resource_type or resource_name"}
     if not os.path.exists(resource_path):
         return {
             "success": False,
@@ -1031,10 +1130,22 @@ async def modify_resource_file(
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     if not resource_type or not resource_name:
         return {"success": False, "error": "Resource type and name are required"}
     
     resource_path = os.path.join(project_dir, "res", resource_type, resource_name)
+    
+    # Validate resource_path stays within project_dir to prevent traversal via
+    # resource_type/resource_name containing ".." (CWE-22)
+    real_resource_path = os.path.realpath(resource_path)
+    real_project_dir = os.path.realpath(project_dir)
+    if not real_resource_path.startswith(real_project_dir + os.sep):
+        return {"success": False, "error": "Path traversal detected in resource_type or resource_name"}
     if not os.path.exists(resource_path):
         return {
             "success": False,
@@ -1106,6 +1217,11 @@ async def search_in_files(
     path_validation = ValidationUtils.validate_path(project_dir, must_exist=True)
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
+    
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
     
     pattern_validation = ValidationUtils.validate_search_pattern(search_pattern)
     if not pattern_validation["valid"]:
@@ -1235,6 +1351,11 @@ async def clean_project(project_dir: str, backup: bool = True) -> Dict:
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
     
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
+    
     try:
         dirs_to_clean = ["build", "dist", "temp"]
         files_to_clean = ["*.tmp", "*.log"]
@@ -1334,6 +1455,11 @@ async def analyze_project_structure(project_dir: str) -> Dict:
     path_validation = ValidationUtils.validate_path(project_dir, must_exist=True)
     if not path_validation["valid"]:
         return {"success": False, "error": path_validation["error"]}
+    
+    # Validate project_dir is within WORKSPACE_DIR to prevent path traversal (CWE-22)
+    workspace_validation = ValidationUtils.validate_workspace_path(project_dir, WORKSPACE_DIR)
+    if not workspace_validation["valid"]:
+        return {"success": False, "error": workspace_validation["error"]}
     
     try:
         analysis = {
