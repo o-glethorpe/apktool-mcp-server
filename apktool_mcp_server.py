@@ -220,7 +220,18 @@ def run_command(command: List[str], timeout: int = DEFAULT_TIMEOUT, cwd: Optiona
                 "success": False,
                 "error": "Invalid command format"
             }
-        
+
+        # Windows: subprocess/CreateProcess cannot launch .bat/.cmd wrappers
+        # directly, and the official apktool distribution ships as apktool.bat.
+        # Resolve the executable via PATHEXT; route batch wrappers through cmd,
+        # while native .exe binaries are still launched directly.
+        if os.name == "nt" and command:
+            resolved = shutil.which(command[0])
+            if resolved:
+                command = [resolved, *command[1:]]
+                if resolved.lower().endswith((".bat", ".cmd")):
+                    command = ["cmd", "/c", *command]
+
         result = subprocess.run(
             command,
             stdout=subprocess.PIPE,
